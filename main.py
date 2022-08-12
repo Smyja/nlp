@@ -30,7 +30,6 @@ distractors_calculated = get_distractors_wordnet(synset_to_use,original_word)
 print ("original word: ",original_word.capitalize())
 print (distractors_calculated)
 
-
 original_word = "bat"
 synset_to_use = wn.synsets(original_word,'n')[0]
 distractors_calculated = get_distractors_wordnet(synset_to_use,original_word)
