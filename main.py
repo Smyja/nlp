@@ -1,45 +1,70 @@
-import nltk
-from nltk.corpus import wordnet as wn
+from fastT5 import get_onnx_model,get_onnx_runtime_sessions,OnnxT5
+from transformers import AutoTokenizer
+from pathlib import Path
+import os
+from fastapi import FastAPI
+from pydantic import BaseModel
 
-# Distractors from Wordnet
-def get_distractors_wordnet(syn,word):
-    distractors=[]
-    word= word.lower()
-    orig_word = word
-    if len(word.split())>0:
-        word = word.replace(" ","_")
-    hypernym = syn.hypernyms()
-    if len(hypernym) == 0: 
-        return distractors
-    for item in hypernym[0].hyponyms():
-        name = item.lemmas()[0].name()
-        #print ("name ",name, " word",orig_word)
-        if name == orig_word:
-            continue
-        name = name.replace("_"," ")
-        name = " ".join(w.capitalize() for w in name.split())
-        if name is not None and name not in distractors:
-            distractors.append(name)
-    return distractors
+app = FastAPI()
 
 
-original_word = "lion"
-synset_to_use = wn.synsets(original_word,'n')[0]
-distractors_calculated = get_distractors_wordnet(synset_to_use,original_word)
+class QuestionRequest(BaseModel):
+    context: str
+    answer: str
 
-print ("original word: ",original_word.capitalize())
-print (distractors_calculated)
+class QuestionResponse(BaseModel):
+    question: str
 
-original_word = "bat"
-synset_to_use = wn.synsets(original_word,'n')[0]
-distractors_calculated = get_distractors_wordnet(synset_to_use,original_word)
+trained_model_path = './t5_squad_v1/'
 
-print ("\noriginal word: ",original_word.capitalize())
-print (distractors_calculated)
+pretrained_model_name = Path(trained_model_path).stem
 
-original_word = "green"
-synset_to_use = wn.synsets(original_word,'n')[0]
-distractors_calculated = get_distractors_wordnet(synset_to_use,original_word)
 
-print ("\noriginal word: ",original_word.capitalize())
-print (distractors_calculated)
+encoder_path = os.path.join(trained_model_path,f"{pretrained_model_name}-encoder-quantized.onnx")
+decoder_path = os.path.join(trained_model_path,f"{pretrained_model_name}-decoder-quantized.onnx")
+init_decoder_path = os.path.join(trained_model_path,f"{pretrained_model_name}-init-decoder-quantized.onnx")
+
+model_paths = encoder_path, decoder_path, init_decoder_path
+model_sessions = get_onnx_runtime_sessions(model_paths)
+model = OnnxT5(trained_model_path, model_sessions)
+
+tokenizer = AutoTokenizer.from_pretrained(trained_model_path)
+
+
+def get_question(sentence,answer,mdl,tknizer):
+  text = "context: {} answer: {}".format(sentence,answer)
+  print (text)
+  max_len = 256
+  encoding = tknizer.encode_plus(text,max_length=max_len, pad_to_max_length=False,truncation=True, return_tensors="pt")
+
+  input_ids, attention_mask = encoding["input_ids"], encoding["attention_mask"]
+
+  outs = mdl.generate(input_ids=input_ids,
+                                  attention_mask=attention_mask,
+                                  early_stopping=True,
+                                  num_beams=5,
+                                  num_return_sequences=1,
+                                  no_repeat_ngram_size=2,
+                                  max_length=128)
+
+
+  dec = [tknizer.decode(ids,skip_special_tokens=True) for ids in outs]
+
+
+  Question = dec[0].replace("question:","")
+  Question= Question.strip()
+  return Question
+
+
+
+@app.get('/')
+def index():
+    return {'message':'hello world'}
+
+@app.post("/getquestion", response_model=QuestionResponse)
+def getquestion(request: QuestionRequest):
+	context = request.context
+	answer = request.answer
+	ques = get_question(context,answer,model,tokenizer)
+	return QuestionResponse(question=ques)
+
